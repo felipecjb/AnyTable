@@ -1,0 +1,268 @@
+name: AnyTable Multi-Arch Build & Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  build-server-arm:
+    name: Build ARM64 Server (.deb on Ubuntu 18.04 glibc 2.27)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for ARM64 emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Compile and package anytable-server_arm64.deb in Ubuntu 18.04 container
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            -w /workspace \
+            arm64v8/ubuntu:18.04 \
+            /bin/bash -c '
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+
+              ARCH="$(uname -m)"
+              LDD_VER="$(ldd --version | head -n 1)"
+              echo "Container arch: ${ARCH}, libc: ${LDD_VER}"
+              if [[ "${ARCH}" != "aarch64" ]]; then
+                echo "Expected aarch64 container, got ${ARCH}" >&2
+                exit 1
+              fi
+              if [[ "${LDD_VER}" != *"2.27"* ]]; then
+                echo "Expected glibc 2.27, got ${LDD_VER}" >&2
+                exit 1
+              fi
+
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends ca-certificates wget binutils dpkg-dev >/dev/null
+
+              wget -q https://go.dev/dl/go1.22.5.linux-arm64.tar.gz -O /tmp/go.tgz
+              tar -C /usr/local -xzf /tmp/go.tgz
+              export PATH="/usr/local/go/bin:${PATH}"
+
+              CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go test ./common/protocol/... ./server/src/...
+
+              PKG_ROOT="/tmp/anytable-server_arm64"
+              rm -rf "${PKG_ROOT}"
+              mkdir -p \
+                "${PKG_ROOT}/DEBIAN" \
+                "${PKG_ROOT}/usr/bin" \
+                "${PKG_ROOT}/etc/anytable" \
+                "${PKG_ROOT}/lib/systemd/system" \
+                "${PKG_ROOT}/lib/udev/rules.d" \
+                "${PKG_ROOT}/etc/xdg/autostart"
+
+              CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+                -trimpath -ldflags="-s -w" \
+                -o "${PKG_ROOT}/usr/bin/anytable-server" \
+                ./server/src
+              chmod 0755 "${PKG_ROOT}/usr/bin/anytable-server"
+
+              if ! ldd "${PKG_ROOT}/usr/bin/anytable-server" 2>&1 | grep -E -q "not a dynamic executable|statically linked"; then
+                echo "ERROR: anytable-server is dynamically linked:" >&2
+                ldd "${PKG_ROOT}/usr/bin/anytable-server" >&2 || true
+                exit 1
+              fi
+
+              tr -d "\r" < server/config/anytable.conf > "${PKG_ROOT}/etc/anytable/server.conf"
+              tr -d "\r" < server/config/anytable.conf > "${PKG_ROOT}/etc/anytable/anytable.conf"
+              chmod 0600 "${PKG_ROOT}/etc/anytable/server.conf" "${PKG_ROOT}/etc/anytable/anytable.conf"
+
+              tr -d "\r" < debian/anytable-server.service > "${PKG_ROOT}/lib/systemd/system/anytable-server.service"
+              chmod 0644 "${PKG_ROOT}/lib/systemd/system/anytable-server.service"
+
+              tr -d "\r" < debian/99-anytable-uinput.rules > "${PKG_ROOT}/lib/udev/rules.d/99-anytable-uinput.rules"
+              chmod 0644 "${PKG_ROOT}/lib/udev/rules.d/99-anytable-uinput.rules"
+
+              printf '%s\n' \
+                '[Desktop Entry]' \
+                'Type=Application' \
+                'Name=AnyTable Tray Monitor' \
+                'Comment=AnyTable status and settings system tray indicator' \
+                'Exec=/usr/bin/anytable-server -gui' \
+                'Terminal=false' \
+                'NoDisplay=false' \
+                'X-GNOME-Autostart-enabled=true' \
+                > "${PKG_ROOT}/etc/xdg/autostart/anytable-tray.desktop"
+              chmod 0644 "${PKG_ROOT}/etc/xdg/autostart/anytable-tray.desktop"
+
+              tr -d "\r" < debian/control > "${PKG_ROOT}/DEBIAN/control"
+              tr -d "\r" < debian/postinst > "${PKG_ROOT}/DEBIAN/postinst"
+              tr -d "\r" < debian/prerm > "${PKG_ROOT}/DEBIAN/prerm"
+              printf "/etc/anytable/server.conf\n" > "${PKG_ROOT}/DEBIAN/conffiles"
+
+              chmod 0644 "${PKG_ROOT}/DEBIAN/control" "${PKG_ROOT}/DEBIAN/conffiles"
+              chmod 0755 "${PKG_ROOT}/DEBIAN/postinst" "${PKG_ROOT}/DEBIAN/prerm"
+
+              dpkg-deb --build "${PKG_ROOT}" /workspace/anytable-server_arm64.deb
+            '
+
+      - name: Upload anytable-server_arm64.deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anytable-server_arm64.deb
+          path: anytable-server_arm64.deb
+          if-no-files-found: error
+
+  build-client-windows:
+    name: Build Windows x86_64 Client (.exe)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.5'
+
+      - name: Run client unit tests
+        shell: pwsh
+        run: |
+          $env:CGO_ENABLED = "0"
+          go test ./common/protocol/... ./client/src/...
+
+      - name: Compile anytable-client-windows.exe
+        shell: pwsh
+        run: |
+          $env:CGO_ENABLED = "0"
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          go build -trimpath "-ldflags=-H=windowsgui -s -w" -o anytable-client-windows.exe ./client/src
+
+      - name: Upload anytable-client-windows.exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anytable-client-windows.exe
+          path: anytable-client-windows.exe
+          if-no-files-found: error
+
+  build-client-linux:
+    name: Build Ubuntu x86_64 Client (.deb)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.5'
+
+      - name: Install X11 and OpenGL development headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            libc6-dev \
+            libgl1-mesa-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxxf86vm-dev \
+            libasound2-dev \
+            pkg-config \
+            dpkg-dev
+
+      - name: Run client unit tests
+        run: |
+          go test ./common/protocol/... ./client/src/hud/... ./client/src/input/... ./client/src/launcher/...
+
+      - name: Compile and package anytable-client_amd64.deb
+        run: |
+          set -euo pipefail
+          PKG_ROOT="/tmp/anytable-client_amd64"
+          rm -rf "${PKG_ROOT}"
+          mkdir -p \
+            "${PKG_ROOT}/DEBIAN" \
+            "${PKG_ROOT}/usr/bin" \
+            "${PKG_ROOT}/usr/share/applications"
+
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+            -trimpath -ldflags="-s -w" \
+            -o "${PKG_ROOT}/usr/bin/anytable-client" \
+            ./client/src
+          chmod 0755 "${PKG_ROOT}/usr/bin/anytable-client"
+
+          printf '%s\n' \
+            '[Desktop Entry]' \
+            'Type=Application' \
+            'Name=AnyTable Viewer' \
+            'Comment=Ultra-low-latency LAN remote desktop client' \
+            'Exec=/usr/bin/anytable-client' \
+            'Terminal=false' \
+            'Categories=Network;RemoteAccess;' \
+            > "${PKG_ROOT}/usr/share/applications/anytable-client.desktop"
+          chmod 0644 "${PKG_ROOT}/usr/share/applications/anytable-client.desktop"
+
+          printf '%s\n' \
+            'Package: anytable-client' \
+            'Version: 1.0.0' \
+            'Section: net' \
+            'Priority: optional' \
+            'Architecture: amd64' \
+            'Maintainer: AnyTable Team <maintainers@anytable.io>' \
+            'Depends: libc6, libgl1, libx11-6, libxcursor1, libxi6, libxinerama1, libxrandr2' \
+            'Description: Ultra-low-latency LAN remote desktop receiver and HUD viewer.' \
+            ' Hardware-accelerated remote desktop viewer with live ping telemetry HUD' \
+            ' and normalized mouse/keyboard capture for AnyTable hosts.' \
+            > "${PKG_ROOT}/DEBIAN/control"
+          chmod 0644 "${PKG_ROOT}/DEBIAN/control"
+
+          dpkg-deb --build --root-owner-group "${PKG_ROOT}" anytable-client_amd64.deb
+
+      - name: Upload anytable-client_amd64.deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anytable-client_amd64.deb
+          path: anytable-client_amd64.deb
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-server-arm, build-client-windows, build-client-linux]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Determine release tag
+        id: meta
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "tag=v1.0.0-build.${GITHUB_RUN_NUMBER}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: AnyTable ${{ steps.meta.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/anytable-server_arm64.deb
+            dist/anytable-client-windows.exe
+            dist/anytable-client_amd64.deb

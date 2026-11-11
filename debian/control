@@ -1,0 +1,12 @@
+Package: anytable-server
+Version: 1.0.0
+Section: utils
+Priority: optional
+Architecture: arm64
+Maintainer: AnyTable Team <maintainers@anytable.io>
+Depends: systemd, udev
+Suggests: ufw, xdg-utils
+Description: Ultra-low-latency LAN remote desktop transmitter.
+ AnyTable headless X11 capture, uinput/XTest input injection, and
+ zero-overhead system tray settings daemon for ARM Ubuntu 18.04 LTS
+ (arm64 and armhf, glibc 2.27 compatible).

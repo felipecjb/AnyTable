@@ -1,0 +1,52 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure|abort-upgrade|abort-deconfigure|abort-remove)
+        # 1. Ensure input and video groups exist and add active desktop user(s).
+        getent group input >/dev/null 2>&1 || groupadd -r input || true
+        getent group video >/dev/null 2>&1 || groupadd -r video || true
+
+        ACTIVE_USERS=""
+        if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+            ACTIVE_USERS="${SUDO_USER}"
+        fi
+        if [ -z "${ACTIVE_USERS}" ]; then
+            LOG_USER="$(logname 2>/dev/null || true)"
+            if [ -n "${LOG_USER}" ] && [ "${LOG_USER}" != "root" ]; then
+                ACTIVE_USERS="${LOG_USER}"
+            fi
+        fi
+        # Also include any non-system desktop users (UID 1000..60000) so unattended dpkg -i works.
+        PASSWD_USERS="$(awk -F: '$3 >= 1000 && $3 < 60000 { print $1 }' /etc/passwd 2>/dev/null || true)"
+        for u in ${ACTIVE_USERS} ${PASSWD_USERS}; do
+            if id "$u" >/dev/null 2>&1; then
+                usermod -aG input,video "$u" 2>/dev/null || true
+            fi
+        done
+
+        # 2. Load uinput kernel module and reload udev rules.
+        if command -v modprobe >/dev/null 2>&1; then
+            modprobe uinput 2>/dev/null || true
+        fi
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload-rules && udevadm trigger || true
+        fi
+
+        # 3. Configure UFW firewall if active.
+        if command -v ufw >/dev/null 2>&1; then
+            if ufw status 2>/dev/null | grep -q "Status: active"; then
+                ufw allow 8443/tcp comment 'AnyTable' >/dev/null 2>&1 || true
+            fi
+        fi
+
+        # 4. Reload systemd, enable, and start anytable-server.service.
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload && systemctl enable anytable-server.service && systemctl restart anytable-server.service || true
+        fi
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

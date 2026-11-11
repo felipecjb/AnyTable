@@ -1,0 +1,18 @@
+[Unit]
+Description=AnyTable Remote Desktop Transmitter Daemon
+Documentation=https://github.com/anytable/anytable
+After=graphical.target systemd-user-sessions.service
+Wants=graphical.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/anytable-server --config /etc/anytable/server.conf
+Restart=always
+RestartSec=5
+Environment="DISPLAY=:0"
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=anytable-server
+
+[Install]
+WantedBy=graphical.target
