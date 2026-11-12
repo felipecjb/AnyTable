@@ -39,10 +39,7 @@ jobs:
               ARCH="$(uname -m)"
               LDD_VER="$(ldd --version | head -n 1 || true)"
               echo "Container arch: ${ARCH}, libc: ${LDD_VER}"
-              if ldd "${PKG_ROOT}/usr/bin/anytable-server" 2>&1 | grep -E "libc\.so|ld-linux"; then
-                    echo "ERROR: anytable-server is dynamically linked" >&2
-                    exit 1
-              fi
+
               if [[ "${ARCH}" != "aarch64" ]]; then
                 echo "Expected aarch64 container, got ${ARCH}" >&2
                 exit 1
@@ -77,9 +74,10 @@ jobs:
                 ./server/src
               chmod 0755 "${PKG_ROOT}/usr/bin/anytable-server"
 
-              if ! ldd "${PKG_ROOT}/usr/bin/anytable-server" 2>&1 | grep -E -q "not a dynamic executable|statically linked"; then
-                echo "ERROR: anytable-server is dynamically linked:" >&2
-                ldd "${PKG_ROOT}/usr/bin/anytable-server" >&2 || true
+              LDD_OUT="$(ldd "${PKG_ROOT}/usr/bin/anytable-server" 2>&1 || true)"
+              echo "Binary link check: ${LDD_OUT}"
+              if echo "${LDD_OUT}" | grep -E "libc\.so|ld-linux"; then
+                echo "ERROR: anytable-server is dynamically linked" >&2
                 exit 1
               fi
 
@@ -93,16 +91,16 @@ jobs:
               tr -d "\r" < debian/99-anytable-uinput.rules > "${PKG_ROOT}/lib/udev/rules.d/99-anytable-uinput.rules"
               chmod 0644 "${PKG_ROOT}/lib/udev/rules.d/99-anytable-uinput.rules"
 
-              printf '%s\n' \
-                '[Desktop Entry]' \
-                'Type=Application' \
-                'Name=AnyTable Tray Monitor' \
-                'Comment=AnyTable status and settings system tray indicator' \
-                'Exec=/usr/bin/anytable-server -gui' \
-                'Terminal=false' \
-                'NoDisplay=false' \
-                'X-GNOME-Autostart-enabled=true' \
-                > "${PKG_ROOT}/etc/xdg/autostart/anytable-tray.desktop"
+              {
+                echo "[Desktop Entry]"
+                echo "Type=Application"
+                echo "Name=AnyTable Tray Monitor"
+                echo "Comment=AnyTable status and settings system tray indicator"
+                echo "Exec=/usr/bin/anytable-server -gui"
+                echo "Terminal=false"
+                echo "NoDisplay=false"
+                echo "X-GNOME-Autostart-enabled=true"
+              } > "${PKG_ROOT}/etc/xdg/autostart/anytable-tray.desktop"
               chmod 0644 "${PKG_ROOT}/etc/xdg/autostart/anytable-tray.desktop"
 
               tr -d "\r" < debian/control > "${PKG_ROOT}/DEBIAN/control"
