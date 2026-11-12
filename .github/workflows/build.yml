@@ -33,12 +33,16 @@ jobs:
             -w /workspace \
             arm64v8/ubuntu:18.04 \
             /bin/bash -c '
-              set -euo pipefail
+              set -eu
               export DEBIAN_FRONTEND=noninteractive
 
               ARCH="$(uname -m)"
-              LDD_VER="$(ldd --version | head -n 1)"
+              LDD_VER="$(ldd --version | head -n 1 || true)"
               echo "Container arch: ${ARCH}, libc: ${LDD_VER}"
+              if ldd "${PKG_ROOT}/usr/bin/anytable-server" 2>&1 | grep -E "libc\.so|ld-linux"; then
+                    echo "ERROR: anytable-server is dynamically linked" >&2
+                    exit 1
+              fi
               if [[ "${ARCH}" != "aarch64" ]]; then
                 echo "Expected aarch64 container, got ${ARCH}" >&2
                 exit 1
@@ -177,11 +181,12 @@ jobs:
             libxxf86vm-dev \
             libasound2-dev \
             pkg-config \
-            dpkg-dev
+            dpkg-dev \
+            xvfb
 
-      - name: Run client unit tests
+      - name: Run Client Tests
         run: |
-          go test ./common/protocol/... ./client/src/hud/... ./client/src/input/... ./client/src/launcher/...
+          xvfb-run -a go test ./common/protocol/... ./client/src/hud/... ./client/src/input/... ./client/src/launcher/...
 
       - name: Compile and package anytable-client_amd64.deb
         run: |
